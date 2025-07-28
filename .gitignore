@@ -1,0 +1,80 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+../.venv/
+.venv
+
+# Environment variables
+.env
+.env.*
+
+# Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+.idea
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# MyPy, Pylint, and other tools
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# Static and temp files
+build/
+dist/
+*.egg-info/
+.eggs/
+*.bak
+
+# Database or runtime artifacts
+*.db
+*.sqlite3
+instance/
+__pypackages__/
+
+# Docker
+*.pid
+*.tar
+*.gz
+*.tgz
+*.zip
+
+# FastAPI docs (if generated and saved)
+openapi.json
+docs.json
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Gunicorn or Uvicorn logs
+gunicorn.log
+uvicorn.log
+
+test_main.http
+
+client_secret.json
