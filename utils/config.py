@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     INTERVIEWER_AGENT_RID: str
     ONTOLOGY_RID: str
 
+    PALANTIR_PROJECT_URL: str
+    FOUNDRY_TOKEN: str
+
     AGENT_RUN_API_NAME: str = "AgentRun"
     COMBINED_RESULT_API_NAME: str = "CombinedResult"
     INTERVIEW_SESSION_API_NAME: str = "InterviewSession"
