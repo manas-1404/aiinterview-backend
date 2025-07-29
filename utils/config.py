@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     PALANTIR_PROJECT_URL: str
     FOUNDRY_TOKEN: str
 
+    ALLOWED_ORIGINS: List[str] = ["*"]
+
     AGENT_RUN_API_NAME: str = "AgentRun"
     COMBINED_RESULT_API_NAME: str = "CombinedResult"
     INTERVIEW_SESSION_API_NAME: str = "InterviewSession"
