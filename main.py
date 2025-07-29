@@ -1,3 +1,4 @@
+import httpx
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 import logging
@@ -18,3 +19,10 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@app.on_event("startup")
+async def startup_event():
+    app.state.client = httpx.AsyncClient()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await app.state.client.aclose()

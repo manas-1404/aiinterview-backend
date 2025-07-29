@@ -1,14 +1,12 @@
-import redis
+from redis.asyncio import Redis
+
 from utils.config import settings
 
-def get_redis_connection():
+redis_client: Redis = Redis.from_url(settings.REDIS_CLOUD_URL, decode_responses=True)
+
+async def get_redis_connection() -> Redis:
     """
     Dependency to get a Redis connection.
     This function can be used in FastAPI routes to get a Redis connection for caching.
     """
-    redis_client = redis.Redis.from_url(settings.REDIS_CLOUD_URL)
-
-    try:
-        yield redis_client
-    finally:
-        pass
+    return redis_client
