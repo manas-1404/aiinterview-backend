@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from datetime import datetime
 
-class UserResponse(BaseModel):
+class UserSchema(BaseModel):
     uid: int
     role: str
     email: str

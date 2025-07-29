@@ -1,9 +1,8 @@
 from fastapi import FastAPI
-import redis
 from ai_interviewer_sdk import FoundryClient, UserTokenAuth
 
 from utils.config import settings
-from pydantic_schemas.user_pydantic import UserResponse
+from pydantic_schemas.user_pydantic import UserSchema
 app = FastAPI()
 
 
@@ -16,12 +15,6 @@ async def root():
 async def say_hello(name: str):
     return {"message": f"Hello {name}"}
 
-@app.get("/hit-redis")
-async def hit_redis():
-    redis_connection = redis.Redis.from_url(settings.REDIS_CLOUD_URL)
-
-    return {"message": redis_connection.ping()}
-
 @app.get("/get-users")
 async def get_users():
 
@@ -32,7 +25,7 @@ async def get_users():
 
     print(userObjects.take(5))
 
-    users = [UserResponse(
+    users = [UserSchema(
         uid=user.uid,
         role=user.role,
         email=user.email,
