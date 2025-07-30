@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     PALANTIR_PROJECT_URL: str
     FOUNDRY_TOKEN: str
 
-    ALLOWED_ORIGINS: List[str] = ["*"]
+    ALLOWED_ORIGINS: List[str]
 
     AGENT_RUN_API_NAME: str = "AgentRun"
     COMBINED_RESULT_API_NAME: str = "CombinedResult"
@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     UPSTASH_REDIS_REST_TOKEN: str
 
     OAUTHLIB_INSECURE_TRANSPORT: int
+
+    JWT_AUTH_ALGORITHM: str
+    JWT_SIGNATURE_SECRET_KEY: str
+    JWT_TOKEN_EXPIRATION_MINUTES: int
+    JWT_REFRESH_TOKEN_EXPIRATION_DAYS: int
 
     class Config:
         env_file = ".env"
