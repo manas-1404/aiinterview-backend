@@ -4,10 +4,12 @@ from fastapi import APIRouter, Depends, Request, HTTPException, Body
 from fastapi.responses import StreamingResponse
 import httpx
 from redis.asyncio import Redis
+from ai_interviewer_sdk.ontology.objects import User
 
 from db.redisConnection import get_redis_connection
 from pydantic_schemas.response_pydantic import ResponseSchema
 from dependency.httpclient_dependency import get_http_client
+from dependency.auth_dependency import authenticate_request
 from utils.config import settings
 
 agent_router = APIRouter(
@@ -15,16 +17,34 @@ agent_router = APIRouter(
     tags=["interviewagent"]
 )
 
-# client: httpx.AsyncClient = None
-
 @agent_router.get("/create-session")
-async def create_agent_session(http_client: httpx.AsyncClient = Depends(get_http_client), redis_connection: Redis = Depends(get_redis_connection)):
+async def create_agent_session(request: Request, jwt_payload: dict[str] = Depends(authenticate_request) , http_client: httpx.AsyncClient = Depends(get_http_client), redis_connection: Redis = Depends(get_redis_connection)):
     """
     Endpoint to create a new interview agent session.
     """
 
-    # TODO: get the userid from auth jwt tokens
-    user_id = 100
+    user_id = jwt_payload.get("sub")
+
+    palantir_client = request.app.state.foundry_client
+    user: User = palantir_client.ontology.objects.User.get(user_id)
+
+    redis_hash_key = f"interview_agent:{user_id}"
+
+    cached_agent_session_id = await redis_connection.hget(redis_hash_key, "agent_session_id")
+
+    if cached_agent_session_id:
+        await redis_connection.hset(redis_hash_key, "current_qna_pointer", str(0))
+        await redis_connection.expire(redis_hash_key, 3600*2)
+
+        return ResponseSchema(
+            success=True,
+            status_code=200,
+            message="Session already exists",
+            data={"session_id": cached_agent_session_id}
+        )
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in Palantir ontology.")
 
     headers = {
         "Content-Type": "application/json",
@@ -35,25 +55,14 @@ async def create_agent_session(http_client: httpx.AsyncClient = Depends(get_http
         "agentVersion": "1.0"
     }
 
-    redis_hash_key = "interview_agent_session_key"
-    redis_hash_field = f"user:{user_id}"
-
-    cached_agent_session_id = await redis_connection.hget(redis_hash_key, redis_hash_field)
-
-    if cached_agent_session_id:
-        return ResponseSchema(
-            success=True,
-            status_code=200,
-            message="Session already exists",
-            data={"session_id": cached_agent_session_id}
-        )
-
     try:
         response = await http_client.post(
             url=f"{settings.PALANTIR_PROJECT_URL}/api/v2/aipAgents/agents/{settings.INTERVIEWER_AGENT_RID}/sessions?preview=true",
             headers=headers,
             json=payload
         )
+
+        response.raise_for_status()
 
         data = response.json()
 
@@ -62,10 +71,13 @@ async def create_agent_session(http_client: httpx.AsyncClient = Depends(get_http
             raise HTTPException(status_code=500, detail="Missing 'rid' in Palantir response")
 
         agent_session_id = data["rid"]
-        redis_hash_value = agent_session_id
 
-        await redis_connection.hset(redis_hash_key, redis_hash_field, redis_hash_value)
-        await redis_connection.expire(redis_hash_key, 3600*24*2)
+        await redis_connection.hset(redis_hash_key, mapping={
+                "agent_session_id": agent_session_id,
+                "current_qna_pointer": str(0),
+            }
+        )
+        await redis_connection.expire(redis_hash_key, 3600*2)
 
         return ResponseSchema(
             success=True,
@@ -83,6 +95,7 @@ async def create_agent_session(http_client: httpx.AsyncClient = Depends(get_http
 @agent_router.post("/send-message-streaming")
 async def send_message_streaming(
     message: str = Body(..., embed=True),
+    jwt_payload: dict[str] = Depends(authenticate_request),
     http_client: httpx.AsyncClient = Depends(get_http_client),
     redis_connection: Redis = Depends(get_redis_connection)
 ):
@@ -90,8 +103,11 @@ async def send_message_streaming(
     Endpoint to send message to Palantir AIP Agent in streaming mode.
     """
 
-    # TODO: get the userid from auth jwt tokens
-    user_id = 100
+    user_id = jwt_payload.get("sub")
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID not found in JWT payload.")
+
     redis_hash_key = "interview_agent_session_key"
     redis_hash_field = f"user:{user_id}"
 
