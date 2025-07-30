@@ -5,6 +5,9 @@ from fastapi.responses import StreamingResponse
 import httpx
 from redis.asyncio import Redis
 from ai_interviewer_sdk.ontology.objects import User
+from foundry_sdk_runtime.types import BatchActionConfig, ReturnEditsMode
+from ai_interviewer_sdk.ontology.action_types import CreateTurnBatchRequest
+from datetime import datetime
 
 from db.redisConnection import get_redis_connection
 from pydantic_schemas.response_pydantic import ResponseSchema
@@ -95,6 +98,7 @@ async def create_agent_session(request: Request, jwt_payload: dict[str] = Depend
 
 @agent_router.post("/send-message-streaming")
 async def send_message_streaming(
+    request: Request,
     message: str = Body(..., embed=True),
     jwt_payload: dict[str] = Depends(authenticate_request),
     http_client: httpx.AsyncClient = Depends(get_http_client),
@@ -115,6 +119,8 @@ async def send_message_streaming(
     cached_session_rid, question_counter = await redis_connection.hmget(redis_hash_key, fields)
     if not cached_session_rid:
         raise HTTPException(status_code=404, detail="No active session found. Please create a session first.")
+
+    palantir_client = request.app.state.foundry_client
 
     url = f"{settings.PALANTIR_PROJECT_URL}/api/v2/aipAgents/agents/{settings.INTERVIEWER_AGENT_RID}/sessions/{cached_session_rid}/streamingContinue?preview=true"
     headers = {
@@ -149,13 +155,52 @@ async def send_message_streaming(
         if message != "<start>":
             await redis_pipe.rpush(f"interview_agent:{user_id}:answers", message)
 
-        if question_counter <= 9:
+        if question_counter >= 9:
+            await finalize_interview_logic(user_id, redis_connection, palantir_client)
+        else:
             await redis_pipe.rpush(f"interview_agent:{user_id}:questions", " ".join(buffer))
             await redis_pipe.hset(f"interview_agent:{user_id}", "current_qna_pointer", str(int(question_counter) + 1))
-
-        await redis_pipe.execute()
+            await redis_pipe.execute()
 
     stream_response = StreamingResponse(event_stream(), media_type="text/event-stream")
     stream_response.background = finalize
     return stream_response
 
+
+async def finalize_interview_logic(user_id: int, redis_connection: Redis, palantir_client):
+    redis_hash_key = f"interview_agent:{user_id}"
+
+    questions = await redis_connection.lrange(f"{redis_hash_key}:questions", 0, -1)
+    answers = await redis_connection.lrange(f"{redis_hash_key}:answers", 0, -1)
+
+    if not questions or not answers or len(questions) != len(answers):
+        raise ValueError("Invalid interview data in Redis")
+
+    batch_requests = []
+    for idx, (q, a) in enumerate(zip(questions, answers)):
+        batch_requests.append(
+
+            # TODO: the qaid and iid needs to be retrieved from redis. right now im adding placeholders
+            CreateTurnBatchRequest(
+                qaid=123, iid=123, uid=user_id,
+                turn_index=idx,
+                question=q, answer=a,
+                target_competency="default",
+                audio_url="", transcript_text=a,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+        )
+
+    response = palantir_client.ontology.batch_actions.create_turn(
+        batch_action_config=BatchActionConfig(return_edits=ReturnEditsMode.ALL),
+        requests=batch_requests
+    )
+
+    await redis_connection.delete(
+        redis_hash_key,
+        f"{redis_hash_key}:questions",
+        f"{redis_hash_key}:answers"
+    )
+
+    return response
