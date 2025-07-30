@@ -92,6 +92,7 @@ async def create_agent_session(request: Request, jwt_payload: dict[str] = Depend
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @agent_router.post("/send-message-streaming")
 async def send_message_streaming(
     message: str = Body(..., embed=True),
@@ -108,10 +109,10 @@ async def send_message_streaming(
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID not found in JWT payload.")
 
-    redis_hash_key = "interview_agent_session_key"
-    redis_hash_field = f"user:{user_id}"
+    redis_hash_key = f"interview_agent:{user_id}"
 
-    cached_session_rid = await redis_connection.hget(redis_hash_key, redis_hash_field)
+    fields = ["agent_session_id", "current_qna_pointer"]
+    cached_session_rid, question_counter = await redis_connection.hmget(redis_hash_key, fields)
     if not cached_session_rid:
         raise HTTPException(status_code=404, detail="No active session found. Please create a session first.")
 
@@ -123,18 +124,38 @@ async def send_message_streaming(
 
     payload = {
         "userInput": {
-            "text": message
+            "text": message if message != "<start>" else "Start the interview and ask the 1st question"
         }
     }
 
-    async def event_stream() -> AsyncGenerator[str, None]:
-        async with http_client.stream("POST", url, headers=headers, json=payload) as response:
-            if response.status_code != 200:
-                error_text = await response.aread()
-                raise HTTPException(status_code=response.status_code, detail=error_text.decode())
+    redis_pipe = redis_connection.pipeline()
+    buffer = []
 
-            async for chunk in response.aiter_text():
-                if chunk.strip():
-                    yield chunk
+    async def event_stream():
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+        # if the questions cross 9, then its the end of the interview
+        if question_counter >= 9:
+            yield "##END_INTERVIEW##"
+        else:
+            async with http_client.stream("POST", url, headers=headers, json=payload) as response:
+                async for chunk in response.aiter_text():
+                    chunk = chunk.strip()
+                    if chunk:
+                        buffer.append(chunk)
+                        yield chunk
+
+    async def finalize():
+
+        if message != "<start>":
+            await redis_pipe.rpush(f"interview_agent:{user_id}:answers", message)
+
+        if question_counter <= 9:
+            await redis_pipe.rpush(f"interview_agent:{user_id}:questions", " ".join(buffer))
+            await redis_pipe.hset(f"interview_agent:{user_id}", "current_qna_pointer", str(int(question_counter) + 1))
+
+        await redis_pipe.execute()
+
+    stream_response = StreamingResponse(event_stream(), media_type="text/event-stream")
+    stream_response.background = finalize
+    return stream_response
+
