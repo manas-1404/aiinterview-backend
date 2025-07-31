@@ -1,3 +1,4 @@
+import json
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, Request, HTTPException, Body
@@ -22,7 +23,7 @@ agent_router = APIRouter(
     tags=["interviewagent"]
 )
 
-@agent_router.get("/create-session")
+@agent_router.post("/create-session")
 async def create_agent_session(request: Request, job_details: JobDescriptionSchema, jwt_payload: dict[str] = Depends(authenticate_request) , http_client: httpx.AsyncClient = Depends(get_http_client), redis_connection: Redis = Depends(get_redis_connection)):
     """
     Endpoint to create a new interview agent session.
@@ -39,26 +40,6 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
     redis_hash_key = f"interview_agent:{user_id}"
 
     cached_agent_session_id = await redis_connection.hget(redis_hash_key, "agent_session_id")
-
-    #get the next jid primary key from Palantir ontology
-    new_jid = palantir_client.ontology.queries.next_job_description_id_api()
-
-    #creating the job description in Palantir ontology
-    new_job_description: SyncApplyActionResponse = palantir_client.ontology.actions.create_job_description(
-        action_config=ActionConfig(
-            mode=ActionMode.VALIDATE_AND_EXECUTE,
-            return_edits=ReturnEditsMode.ALL),
-        jid=new_jid,
-        role=job_details.role,
-        company=job_details.company,
-        minimum_qualification=job_details.min_qualifications,
-        preferred_qualification=job_details.preferred_qualifications,
-        jd_summary=job_details.jd_summary,
-        created_at=datetime.today(),
-        updated_at=datetime.today()
-    )
-
-    await redis_connection.hset(redis_hash_key, "jid", str(new_jid))
 
     if cached_agent_session_id:
         await redis_connection.hset(redis_hash_key, "current_qna_pointer", str(0))
@@ -97,11 +78,54 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
 
         agent_session_id = data["rid"]
 
+        # get the next jid & iid primary key from Palantir ontology
+        new_jid = palantir_client.ontology.queries.next_job_description_id_api()
+        new_iid = palantir_client.ontology.queries.next_interview_session_id_api()
+
+        # creating the job description in Palantir ontology
+        new_job_description: SyncApplyActionResponse = palantir_client.ontology.actions.create_job_description(
+            action_config=ActionConfig(
+                mode=ActionMode.VALIDATE_AND_EXECUTE,
+                return_edits=ReturnEditsMode.ALL),
+            jid=new_jid,
+            role=job_details.role,
+            company=job_details.company,
+            minimum_qualification=job_details.min_qualifications,
+            preferred_qualification=job_details.preferred_qualifications,
+            jd_summary=job_details.jd_summary,
+            created_at=datetime.today(),
+            updated_at=datetime.today()
+        )
+
+        new_interview_session: SyncApplyActionResponse = palantir_client.ontology.actions.create_interview_session(
+            action_config=ActionConfig(
+                mode=ActionMode.VALIDATE_AND_EXECUTE,
+                return_edits=ReturnEditsMode.ALL),
+            iid=new_iid,
+            uid=user_id,
+            jid=new_jid,
+            started_at=datetime.today(),
+            status="started",
+            rubric_version="v1",
+            phase_log=json.dumps({"phase1": 3, "phase2": 3, "phase3": 3}),
+            created_at=datetime.today(),
+            updated_at=datetime.today()
+        )
+
+        if new_job_description.validation.result != "VALID":
+            raise HTTPException(status_code=400, detail="Job Description creation failed")
+
+        if new_interview_session.validation.result != "VALID":
+            raise HTTPException(status_code=400, detail="Interview Session creation failed")
+
         await redis_connection.hset(redis_hash_key, mapping={
                 "agent_session_id": agent_session_id,
                 "current_qna_pointer": str(0),
+                "jid": str(new_jid),
+                "iid": str(new_iid),
             }
         )
+
         await redis_connection.expire(redis_hash_key, 3600*2)
 
         return ResponseSchema(
@@ -199,23 +223,17 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
         raise ValueError("Invalid interview data in Redis")
 
     interview_fields = ["qaid", "iid"]
-    new_qaid, new_iid = await redis_connection.hmget(redis_hash_key, interview_fields)
-
-    if new_qaid is None:
-        new_qaid = palantir_client.ontology.queries.next_turn_id_api()
-
-    if new_iid is None:
-        new_iid = palantir_client.ontology.queries.next_interview_session_id_api()
+    cached_qaid, cached_iid = await redis_connection.hmget(redis_hash_key, interview_fields)
 
     #convert the str to int after retrieving from redis or palantir
-    new_qaid = int(new_qaid)
-    new_iid = int(new_iid)
+    new_qaid = int(cached_qaid) if cached_qaid else palantir_client.ontology.queries.next_turn_id_api()
+    cached_iid = int(cached_iid)
 
     batch_requests = []
     for idx, (q, a) in enumerate(zip(questions, answers)):
         batch_requests.append(
             CreateTurnBatchRequest(
-                qaid=new_qaid, iid=new_iid, uid=user_id,
+                qaid=new_qaid, iid=cached_iid, uid=user_id,
                 turn_index=idx,
                 question=q, answer=a,
                 target_competency="default",
@@ -232,6 +250,19 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
         batch_action_config=BatchActionConfig(return_edits=ReturnEditsMode.ALL),
         requests=batch_requests
     )
+
+    edit_interview_session: SyncApplyActionResponse = palantir_client.ontology.actions.edit_interview_session(
+        action_config=ActionConfig(
+            mode=ActionMode.VALIDATE_AND_EXECUTE,
+            return_edits=ReturnEditsMode.ALL),
+        interview_session=cached_iid,
+        ended_at=datetime.today(),
+        status="completed",
+        updated_at=datetime.today()
+    )
+
+    if edit_interview_session.validation.result != "VALID":
+        raise HTTPException(status_code=400, detail="Failed to mark interview session as completed")
 
     await redis_connection.delete(
         redis_hash_key,
