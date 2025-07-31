@@ -5,13 +5,14 @@ from fastapi.responses import StreamingResponse
 import httpx
 from redis.asyncio import Redis
 from ai_interviewer_sdk.ontology.objects import User
-from foundry_sdk_runtime.types import BatchActionConfig, ReturnEditsMode
+from foundry_sdk_runtime.types import BatchActionConfig, ReturnEditsMode, ActionConfig, ActionMode, SyncApplyActionResponse
 from ai_interviewer_sdk.ontology.action_types import CreateTurnBatchRequest
 from datetime import datetime
 from ai_interviewer_sdk import FoundryClient, UserTokenAuth
 
 from db.redisConnection import get_redis_connection
 from pydantic_schemas.response_pydantic import ResponseSchema
+from pydantic_schemas.jobdescription_pydantic import JobDescriptionSchema
 from dependency.httpclient_dependency import get_http_client
 from dependency.auth_dependency import authenticate_request
 from utils.config import settings
@@ -22,7 +23,7 @@ agent_router = APIRouter(
 )
 
 @agent_router.get("/create-session")
-async def create_agent_session(request: Request, jwt_payload: dict[str] = Depends(authenticate_request) , http_client: httpx.AsyncClient = Depends(get_http_client), redis_connection: Redis = Depends(get_redis_connection)):
+async def create_agent_session(request: Request, job_details: JobDescriptionSchema, jwt_payload: dict[str] = Depends(authenticate_request) , http_client: httpx.AsyncClient = Depends(get_http_client), redis_connection: Redis = Depends(get_redis_connection)):
     """
     Endpoint to create a new interview agent session.
     """
@@ -32,9 +33,32 @@ async def create_agent_session(request: Request, jwt_payload: dict[str] = Depend
     palantir_client: FoundryClient = request.app.state.foundry_client
     user: User = palantir_client.ontology.objects.User.get(user_id)
 
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in Palantir ontology.")
+
     redis_hash_key = f"interview_agent:{user_id}"
 
     cached_agent_session_id = await redis_connection.hget(redis_hash_key, "agent_session_id")
+
+    #get the next jid primary key from Palantir ontology
+    new_jid = palantir_client.ontology.queries.next_job_description_id_api()
+
+    #creating the job description in Palantir ontology
+    new_job_description: SyncApplyActionResponse = palantir_client.ontology.actions.create_job_description(
+        action_config=ActionConfig(
+            mode=ActionMode.VALIDATE_AND_EXECUTE,
+            return_edits=ReturnEditsMode.ALL),
+        jid=new_jid,
+        role=job_details.role,
+        company=job_details.company,
+        minimum_qualification=job_details.min_qualifications,
+        preferred_qualification=job_details.preferred_qualifications,
+        jd_summary=job_details.jd_summary,
+        created_at=datetime.today(),
+        updated_at=datetime.today()
+    )
+
+    await redis_connection.hset(redis_hash_key, "jid", str(new_jid))
 
     if cached_agent_session_id:
         await redis_connection.hset(redis_hash_key, "current_qna_pointer", str(0))
@@ -46,9 +70,6 @@ async def create_agent_session(request: Request, jwt_payload: dict[str] = Depend
             message="Session already exists",
             data={"session_id": cached_agent_session_id}
         )
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found in Palantir ontology.")
 
     headers = {
         "Content-Type": "application/json",
