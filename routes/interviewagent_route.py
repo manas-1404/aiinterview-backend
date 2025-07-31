@@ -8,6 +8,7 @@ from ai_interviewer_sdk.ontology.objects import User
 from foundry_sdk_runtime.types import BatchActionConfig, ReturnEditsMode
 from ai_interviewer_sdk.ontology.action_types import CreateTurnBatchRequest
 from datetime import datetime
+from ai_interviewer_sdk import FoundryClient, UserTokenAuth
 
 from db.redisConnection import get_redis_connection
 from pydantic_schemas.response_pydantic import ResponseSchema
@@ -28,7 +29,7 @@ async def create_agent_session(request: Request, jwt_payload: dict[str] = Depend
 
     user_id = jwt_payload.get("sub")
 
-    palantir_client = request.app.state.foundry_client
+    palantir_client: FoundryClient = request.app.state.foundry_client
     user: User = palantir_client.ontology.objects.User.get(user_id)
 
     redis_hash_key = f"interview_agent:{user_id}"
@@ -167,7 +168,7 @@ async def send_message_streaming(
     return stream_response
 
 
-async def finalize_interview_logic(user_id: int, redis_connection: Redis, palantir_client):
+async def finalize_interview_logic(user_id: int, redis_connection: Redis, palantir_client: FoundryClient):
     redis_hash_key = f"interview_agent:{user_id}"
 
     questions = await redis_connection.lrange(f"{redis_hash_key}:questions", 0, -1)
@@ -176,13 +177,24 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
     if not questions or not answers or len(questions) != len(answers):
         raise ValueError("Invalid interview data in Redis")
 
+    interview_fields = ["qaid", "iid"]
+    new_qaid, new_iid = await redis_connection.hmget(redis_hash_key, interview_fields)
+
+    if new_qaid is None:
+        new_qaid = palantir_client.ontology.queries.next_turn_id_api()
+
+    if new_iid is None:
+        new_iid = palantir_client.ontology.queries.next_interview_session_id_api()
+
+    #convert the str to int after retrieving from redis or palantir
+    new_qaid = int(new_qaid)
+    new_iid = int(new_iid)
+
     batch_requests = []
     for idx, (q, a) in enumerate(zip(questions, answers)):
         batch_requests.append(
-
-            # TODO: the qaid and iid needs to be retrieved from redis. right now im adding placeholders
             CreateTurnBatchRequest(
-                qaid=123, iid=123, uid=user_id,
+                qaid=new_qaid, iid=new_iid, uid=user_id,
                 turn_index=idx,
                 question=q, answer=a,
                 target_competency="default",
@@ -192,6 +204,9 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
             )
         )
 
+        new_qaid += 1
+
+
     response = palantir_client.ontology.batch_actions.create_turn(
         batch_action_config=BatchActionConfig(return_edits=ReturnEditsMode.ALL),
         requests=batch_requests
@@ -200,7 +215,9 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
     await redis_connection.delete(
         redis_hash_key,
         f"{redis_hash_key}:questions",
-        f"{redis_hash_key}:answers"
+        f"{redis_hash_key}:answers",
+        f"interview_agent:{user_id}:qaid",
+        f"interview_agent:{user_id}:iid"
     )
 
     return response
