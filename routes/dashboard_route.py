@@ -1,3 +1,4 @@
+import pickle
 from datetime import datetime, time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -6,6 +7,7 @@ from ai_interviewer_sdk.ontology.object_sets import UserObjectSet, InterviewSess
 from ai_interviewer_sdk import FoundryClient
 from redis.asyncio import Redis
 
+from utils.utils import encode_for_cache, decode_from_cache
 from db.redisConnection import get_redis_connection
 from dependency.auth_dependency import authenticate_request
 from pydantic_schemas.combinedresults_pydantic import CombinedResultSchema
@@ -47,6 +49,32 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
+    cached_data = await redis_connection.hgetall(f"dashboard_cache:{user_id}")
+
+    if cached_data and all(k in cached_data for k in ["combined_result", "practice_plans", "interview_session", "practice_tasks"]):
+
+        try:
+            #i am decoding and encoding the redis cache because the data is stored as stringifiable bytes, so i need to use base64 decoding and encoding to avoid data corruption
+            combined_result = decode_from_cache(cached_data["combined_result"])
+            practice_plans = decode_from_cache(cached_data["practice_plans"])
+            interview_session = decode_from_cache(cached_data["interview_session"])
+            practice_tasks = decode_from_cache(cached_data["practice_tasks"])
+
+            return ResponseSchema(
+                success=True,
+                status_code=200,
+                message="Dashboard data retrieved successfully from cache.",
+                data={
+                    "CombinedResult": combined_result,
+                    "InterviewSession": interview_session,
+                    "PracticePlans": practice_plans,
+                    "PracticeTasks": practice_tasks
+                }
+            )
+
+        #something went wrong while decoding the cache, so we are deleting the cache and instead fetch the data again
+        except Exception:
+            await redis_connection.delete(f"dashboard_cache:{user_id}")
 
     try:
         interview_session_list: List[InterviewSession] = list(get_linked_interview_sessions_from_object(source=user))
@@ -154,6 +182,18 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
             started_at=interview_session.started_at,
             ended_at=interview_session.ended_at
         )
+
+        await redis_connection.hset(
+            f"dashboard_cache:{user_id}",
+            mapping={
+                "combined_result": encode_for_cache(combined_result_data),
+                "interview_session": encode_for_cache(interview_session_data),
+                "practice_plans": encode_for_cache(practice_plan_list_data),
+                "practice_tasks": encode_for_cache(practice_task_list_data),
+            }
+        )
+
+        await redis_connection.expire(f"dashboard_cache:{user_id}", 3600)
 
         return ResponseSchema(
             success=True,
