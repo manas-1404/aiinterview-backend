@@ -8,6 +8,7 @@ from ai_interviewer_sdk import FoundryClient
 from redis.asyncio import Redis
 
 from utils.utils import encode_for_cache, decode_from_cache
+from permissions.user_permissions import user_can
 from db.redisConnection import get_redis_connection
 from dependency.auth_dependency import authenticate_request
 from pydantic_schemas.combinedresults_pydantic import CombinedResultSchema
@@ -41,6 +42,7 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
     Endpoint to get dashboard data.
     """
     user_id = jwt_payload.get("sub")
+    role = jwt_payload.get("role")
 
     palantir_client: FoundryClient = request.app.state.foundry_client
 
@@ -77,11 +79,15 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
             await redis_connection.delete(f"dashboard_cache:{user_id}")
 
     try:
-        interview_session_list: List[InterviewSession] = list(get_linked_interview_sessions_from_object(source=user))
 
-        interview_session: InterviewSession = max(interview_session_list, key=lambda x: x.created_at, default=None)
+        if user_can(role, "all_view_combined_results"):
+            interview_session_list: List[InterviewSession] = list(palantir_client.ontology.objects.InterviewSession.iterate())
+            interview_session: List[InterviewSession] = [session for session in interview_session_list]
+        else:
+            interview_session_list: List[InterviewSession] = list(get_linked_interview_sessions_from_object(source=user))
+            interview_session: List[InterviewSession] = [max(interview_session_list, key=lambda x: x.created_at, default=None)]
 
-        if interview_session is None:
+        if not interview_session or interview_session[0] is None:
             return ResponseSchema(
                 success=True,
                 status_code=200,
@@ -89,47 +95,56 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
                 data={}
             )
 
-        combined_result: CombinedResult = interview_session.combined_result()
+        combined_result: List[CombinedResult] = [each_combined_results.combined_result() for each_combined_results in interview_session]
 
-        if combined_result is None:
+        if not combined_result:
             return ResponseSchema(
                 success=True,
                 status_code=200,
                 message="Processing the results. Please wait or try again later.",
             )
 
-        practice_plan_iterator: Iterator[PracticePlan] = get_linked_practice_plans_from_object(source=interview_session)
+        practice_plan_iterator: List[Iterator[PracticePlan]] = [get_linked_practice_plans_from_object(source=each_interview_session) for each_interview_session in interview_session]
 
         practice_plan_list: List[PracticePlan] = []
         practice_task_list: List[PracticeTask] = []
 
-        for practice_plan in practice_plan_iterator:
+        for iterator in practice_plan_iterator:
+            for practice_plan in iterator:
 
-            if practice_plan.iid == interview_session.iid:
-                practice_plan_list.append(practice_plan)
-                practice_task_list.append(practice_plan.practice_task())
+                if user_can(role, "all_view_combined_results"):
+                    practice_plan_list.append(practice_plan)
+                    practice_task_list.append(practice_plan.practice_task())
 
-        combined_result_data = CombinedResultSchema(
-            rid=int(combined_result.rid),
-            total_score_25=combined_result.total_score25,
-            clarity_avg=combined_result.clarity_avg,
-            created_at=combined_result.created_at,
-            eval_confidence=combined_result.eval_confidence,
-            filler_avg=combined_result.filler_avg,
-            gaps=combined_result.gaps,
-            iid=combined_result.iid,
-            per_metric_weights=combined_result.per_metric_weights,
-            recommendation=combined_result.recommendation,
-            relevance_avg=combined_result.relevance_avg,
-            rubric_version=combined_result.rubric_version,
-            star_avg=combined_result.star_avg,
-            strengths=combined_result.strengths,
-            technical_depth_avg=combined_result.technical_depth_avg,
-            turn_indices_used=combined_result.turn_indices_used,
-            uid=combined_result.uid,
-            updated_at=combined_result.updated_at,
-            weaknesses=combined_result.weaknesses,
+                else:
+                    #at a time the user will only have 1 most recent interview session, so we access the 1st element directly in interview_session
+                    if practice_plan.iid == interview_session[0].iid:
+                        practice_plan_list.append(practice_plan)
+                        practice_task_list.append(practice_plan.practice_task())
+
+        combined_result_data = [CombinedResultSchema(
+            rid=int(each_combined_results.rid),
+            total_score_25=each_combined_results.total_score25,
+            clarity_avg=each_combined_results.clarity_avg,
+            created_at=each_combined_results.created_at,
+            eval_confidence=each_combined_results.eval_confidence,
+            filler_avg=each_combined_results.filler_avg,
+            gaps=each_combined_results.gaps,
+            iid=each_combined_results.iid,
+            per_metric_weights=each_combined_results.per_metric_weights,
+            recommendation=each_combined_results.recommendation,
+            relevance_avg=each_combined_results.relevance_avg,
+            rubric_version=each_combined_results.rubric_version,
+            star_avg=each_combined_results.star_avg,
+            strengths=each_combined_results.strengths,
+            technical_depth_avg=each_combined_results.technical_depth_avg,
+            turn_indices_used=each_combined_results.turn_indices_used,
+            uid=each_combined_results.uid,
+            updated_at=each_combined_results.updated_at,
+            weaknesses=each_combined_results.weaknesses,
         )
+            for each_combined_results in combined_result
+        ]
 
         practice_plan_list_data = [
             PracticePlanSchema(
@@ -172,17 +187,18 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
             for task in practice_task_list
         ]
 
-        interview_session_data = InterviewSessionSchema(
-            iid=interview_session.iid,
-            uid=interview_session.uid,
-            jid=interview_session.jid,
-            created_at=interview_session.created_at,
-            updated_at=interview_session.updated_at,
-            status=interview_session.status,
-            started_at=interview_session.started_at,
-            ended_at=interview_session.ended_at
+        interview_session_data = [InterviewSessionSchema(
+            iid=each_interview_session.iid,
+            uid=each_interview_session.uid,
+            jid=each_interview_session.jid,
+            created_at=each_interview_session.created_at,
+            updated_at=each_interview_session.updated_at,
+            status=each_interview_session.status,
+            started_at=each_interview_session.started_at,
+            ended_at=each_interview_session.ended_at
         )
-
+            for each_interview_session in interview_session
+        ]
         await redis_connection.hset(
             f"dashboard_cache:{user_id}",
             mapping={
