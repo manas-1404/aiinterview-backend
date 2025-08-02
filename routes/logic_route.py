@@ -1,7 +1,15 @@
+from datetime import datetime
+
 import redis
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import JSONResponse
 from starlette import status
+from ai_interviewer_sdk.ontology.object_sets import PracticePlanObjectSet
+from fastapi import APIRouter, Depends, HTTPException, Request
+from ai_interviewer_sdk import FoundryClient
+from ai_interviewer_sdk.ontology.objects import PracticePlan, User, PracticeTask
+from redis.asyncio import Redis
+from foundry_sdk_runtime.types import ActionConfig, ActionMode, ReturnEditsMode, SyncApplyActionResponse
 
 from dependency.auth_dependency import create_jwt_token, create_jwt_refresh_token
 from db.redisConnection import get_redis_connection
@@ -16,33 +24,47 @@ login_router = APIRouter(
 )
 
 @login_router.post("/login")
-def login(login_data: LoginSchema, db_connection: Session = Depends(get_db_session), redis_connection: redis.Redis = Depends(get_redis_connection)):
+def login(request: Request, login_data: LoginSchema, redis_connection: redis.Redis = Depends(get_redis_connection)):
 
-    user = (db_connection.query(User).options(joinedload(User.templates)).filter(User.email == login_data.email).first())
+    palantir_client: FoundryClient = request.app.state.foundry_client
+    user: User = palantir_client.ontology.objects.User.where(User.email == login_data.email.lower())
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
 
     #user is not present in the db
-    if user is None or not verify_string(plain_string=login_data.password, hashed_string=user.password):
+    if user is None or not verify_string(plain_string=login_data.password, hashed_string=user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
 
-    user_jwt_token = create_jwt_token(data=user.uid)
+    data = {
+        "uid": user.uid,
+        "role": user.role,
+    }
+    user_jwt_token = create_jwt_token(data=data)
 
-    user_refresh_token = create_jwt_refresh_token(data=user.uid)
+    user_refresh_token = create_jwt_refresh_token(data=data)
 
-    user.jwt_refresh_token = user_refresh_token
-
-    db_connection.commit()
+    response: SyncApplyActionResponse = palantir_client.ontology.actions.edit_user(
+        action_config=ActionConfig(
+            mode=ActionMode.VALIDATE_AND_EXECUTE,
+            return_edits=ReturnEditsMode.ALL),
+        user=user.uid,
+        jwt_refresh_token= user_refresh_token,
+        created_at=datetime.today(),
+        updated_at=datetime.today()
+    )
 
     #cache all the user templates as soon as they login to prevent future database queries for templates
-    redis_template_key = f"user:{user.uid}:templates"
+    redis_user_key = f"user:{user.uid}"
     redis_pipeline = redis_connection.pipeline()
 
-    for template in user.templates:
-        template_data = TemplateSchema.model_validate(template).model_dump()
-        redis_pipeline.hset(redis_template_key, template.template_id, serialize_for_redis(template_data))
-
-    redis_pipeline.hset("user_name", user.uid, user.name)
-    redis_pipeline.expire(redis_template_key, 60 * 90)
+    redis_pipeline.hset(redis_user_key, mapping={
+        "uid": user.uid,
+        "name": user.name,
+        "jwt_refresh_token": user_refresh_token,
+    })
+    redis_pipeline.expire(redis_user_key, 60 * 90)
     redis_pipeline.execute()
 
     json_response = JSONResponse(
@@ -69,30 +91,40 @@ def login(login_data: LoginSchema, db_connection: Session = Depends(get_db_sessi
     return json_response
 
 @login_router.post("/signup")
-def sign_up(signup_data: SignUpSchema, db_connection: Session = Depends(get_db_session), redis_connection: redis.Redis = Depends(get_redis_connection)):
+def sign_up(request: Request, signup_data: SignUpSchema, redis_connection: redis.Redis = Depends(get_redis_connection)):
     """
     Endpoint to sign up a new user.
     """
-    existing_user = db_connection.query(User).filter(User.email == signup_data.email.lower()).first()
+
+    palantir_client: FoundryClient = request.app.state.foundry_client
+    existing_user: User = palantir_client.ontology.objects.User.where(User.email == signup_data.email.lower())
 
     if existing_user:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
-    new_user = User(
+    new_user_id = palantir_client.ontology.queries.next_user_id_api()
+
+    data = {
+        "uid": new_user_id,
+        "role": signup_data.role,
+    }
+
+    jwt_token = create_jwt_token(data=data)
+    refresh_token = create_jwt_refresh_token(data=data)
+
+    response: SyncApplyActionResponse = palantir_client.ontology.actions.create_user(
+        action_config=ActionConfig(
+            mode=ActionMode.VALIDATE_AND_EXECUTE,
+            return_edits=ReturnEditsMode.ALL),
+        uid=new_user_id,
         name=signup_data.name,
-        email=signup_data.email,
-        password=encrypt_string(plain_string=signup_data.password),
+        email=signup_data.email.lower(),
+        password_hash=encrypt_string(plain_string=signup_data.password),
+        role=signup_data.role,
+        created_at=datetime.today(),
+        updated_at=datetime.today(),
+        jwt_refresh_token=refresh_token
     )
-
-    db_connection.add(new_user)
-    db_connection.flush()
-
-    jwt_token = create_jwt_token(data=new_user.uid)
-    refresh_token = create_jwt_refresh_token(data=new_user.uid)
-
-    new_user.jwt_refresh_token = refresh_token
-
-    db_connection.commit()
 
     return ResponseSchema(
         success=True,
