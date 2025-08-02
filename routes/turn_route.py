@@ -48,8 +48,8 @@ async def get_turn_by_iid(request: Request,
 
     turn_object_set: TurnObjectSet = (
         palantir_client.ontology.objects.Turn
-        .where(Turn.iid == interview_session_details.iid)
-        .where(Turn.uid == user_id)
+        .where(Turn.object_type.iid == interview_session_details.iid)
+        .where(Turn.object_type.uid == user_id)
     )
 
     turns_list: List[TurnSchema] = []
@@ -121,7 +121,7 @@ async def get_all_turns(request: Request,
         )
 
     turn_object_set: TurnObjectSet = (
-        palantir_client.ontology.objects.Turn.where(Turn.uid == user_id)
+        palantir_client.ontology.objects.Turn.where(Turn.object_type.uid == user_id)
     )
 
     turns_list: List[TurnSchema] = []

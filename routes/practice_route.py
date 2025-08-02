@@ -38,7 +38,7 @@ async def get_practice_plan(request: Request, interview_session_detail: Intervie
 
     practice_plan_object_sets: PracticePlanObjectSet = (
             palantir_client.ontology.objects.PracticePlan.
-            where((PracticePlan.iid == interview_session_detail.iid) & (PracticePlan.uid == user_id))
+            where((PracticePlan.object_type.iid == interview_session_detail.iid) & (PracticePlan.object_type.uid == user_id))
         )
 
     practice_plan_list: List[PracticePlanSchema] = []
@@ -143,7 +143,7 @@ async def get_all_practice_details(request: Request,
     else:
         practice_plan_object_sets: PracticePlanObjectSet = (
                 palantir_client.ontology.objects.PracticePlan.
-                where(PracticePlan.uid == user_id)
+                where(PracticePlan.object_type.uid == user_id)
             )
 
         practice_plan_list: List[PracticePlanSchema] = []
