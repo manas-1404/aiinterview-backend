@@ -4,7 +4,7 @@ import redis
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import JSONResponse
 from starlette import status
-from ai_interviewer_sdk.ontology.object_sets import PracticePlanObjectSet
+from ai_interviewer_sdk.ontology.object_sets import PracticePlanObjectSet, UserObjectSet
 from fastapi import APIRouter, Depends, HTTPException, Request
 from ai_interviewer_sdk import FoundryClient
 from ai_interviewer_sdk.ontology.objects import PracticePlan, User, PracticeTask
@@ -27,10 +27,13 @@ login_router = APIRouter(
 def login(request: Request, login_data: LoginSchema, redis_connection: redis.Redis = Depends(get_redis_connection)):
 
     palantir_client: FoundryClient = request.app.state.foundry_client
-    user: User = palantir_client.ontology.objects.User.where(User.email == login_data.email.lower())
+    user_object_set: UserObjectSet = palantir_client.ontology.objects.User.where(User.object_type.email == login_data.email.lower())
 
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+    user: User = None
+    for user_iterator in user_object_set.iterate():
+        user = user_iterator
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     #user is not present in the db
     if user is None or not verify_string(plain_string=login_data.password, hashed_string=user.password_hash):
@@ -50,6 +53,10 @@ def login(request: Request, login_data: LoginSchema, redis_connection: redis.Red
             mode=ActionMode.VALIDATE_AND_EXECUTE,
             return_edits=ReturnEditsMode.ALL),
         user=user.uid,
+        name=user.name,
+        email=user.email,
+        password_hash=user.password_hash,
+        role=user.role,
         jwt_refresh_token= user_refresh_token,
         created_at=datetime.today(),
         updated_at=datetime.today()
@@ -97,10 +104,11 @@ def sign_up(request: Request, signup_data: SignUpSchema, redis_connection: redis
     """
 
     palantir_client: FoundryClient = request.app.state.foundry_client
-    existing_user: User = palantir_client.ontology.objects.User.where(User.email == signup_data.email.lower())
+    existing_user_object_set: UserObjectSet = palantir_client.ontology.objects.User.where(User.object_type.email == signup_data.email.lower())
 
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+    for existing_user in existing_user_object_set.iterate():
+        if existing_user:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
     new_user_id = palantir_client.ontology.queries.next_user_id_api()
 
