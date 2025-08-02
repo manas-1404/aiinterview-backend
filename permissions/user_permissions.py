@@ -10,7 +10,8 @@ ROLE_PERMISSIONS = {
         "all_view_practice_plans",
         "all_view_practice_tasks",
         "all_view_qna_results",
-        "approve_practice_plans"
+        "approve_practice_plans",
+        "approve_practice_tasks",
     ],
     "admin": ["all"]
 }

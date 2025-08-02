@@ -211,68 +211,102 @@ async def get_all_practice_details(request: Request,
         data={"practice_plan": practice_plan_list, "practice_tasks": practice_task_list}
     )
 
-@practice_router.post("/review-practice-plan")
-async def review_practice_plan(
+@practice_router.post("/review")
+async def review_practice_item(
     request: Request,
-    practice_plan_details: PracticePlanSchema,
-    practice_task_details: PracticeTaskSchema,
+    practice_plan_details: PracticePlanSchema = None,
+    practice_task_details: PracticeTaskSchema = None,
     jwt_payload: dict = Depends(authenticate_request),
 ):
     """
-    Endpoint for coaches to approve or decline a practice plan.
+    Endpoint for coaches to approve/decline a practice plan
+    OR edit/approve a practice task.
     """
     user_id = jwt_payload.get("sub")
     role = jwt_payload.get("role")
 
-    if not user_can(role, "approve_practice_plans"):
+    if not user_can(role, "approve_practice_plans") and not user_can(role, "approve_practice_tasks"):
         raise HTTPException(status_code=403, detail="You are not authorized to perform this action.")
 
     palantir_client: FoundryClient = request.app.state.foundry_client
 
-    if practice_plan_details.status not in ["approved", "declined"]:
-        raise HTTPException(status_code=400, detail="Status must be approved or declined.")
+    if practice_plan_details:
+        if practice_plan_details.status not in ["approved", "declined"]:
+            raise HTTPException(status_code=400, detail="Status must be approved or declined for plans.")
 
-    status = practice_plan_details.status
-    approved_at = None
-    approved_by = None
-    decline_reason = None
+        approved_at = None
+        approved_by = None
+        decline_reason = None
 
-    if status == "approved":
-        approved_at = datetime.utcnow()
-        approved_by = float(user_id)
-    else:
-        if not practice_plan_details.decline_reason:
-            raise HTTPException(status_code=400, detail="Decline reason required for declined plans.")
-        decline_reason = practice_plan_details.decline_reason
+        if practice_plan_details.status == "approved":
+            approved_at = datetime.utcnow()
+            approved_by = float(user_id)
+        else:
+            if not practice_plan_details.decline_reason:
+                raise HTTPException(status_code=400, detail="Decline reason required for declined plans.")
+            decline_reason = practice_plan_details.decline_reason
 
-    response: SyncApplyActionResponse = palantir_client.ontology.actions.edit_practice_plan(
-        action_config=ActionConfig(
-            mode=ActionMode.VALIDATE_AND_EXECUTE,
-            return_edits=ReturnEditsMode.ALL
-        ),
-        practice_plan=practice_plan_details.ppid,
-        iid=practice_plan_details.iid,
-        uid=practice_plan_details.uid,
-        status=status,
-        plan_version=practice_plan_details.plan_version,
-        overall_goal=practice_plan_details.overall_goal,
-        reading_list=practice_plan_details.reading_list,
-        next_session_suggestion_days=practice_plan_details.next_session_suggested_days,
-        motivation_note=practice_plan_details.motivation_note,
-        created_by=practice_plan_details.created_by,
-        approved_by=approved_by,
-        approved_at=approved_at,
-        decline_reason=decline_reason,
-        created_at=practice_plan_details.created_at,
-        updated_at=datetime.utcnow()
-    )
+        response: SyncApplyActionResponse = palantir_client.ontology.actions.edit_practice_plan(
+            action_config=ActionConfig(
+                mode=ActionMode.VALIDATE_AND_EXECUTE,
+                return_edits=ReturnEditsMode.ALL
+            ),
+            practice_plan=practice_plan_details.ppid,
+            iid=practice_plan_details.iid,
+            uid=practice_plan_details.uid,
+            status=practice_plan_details.status,
+            plan_version=practice_plan_details.plan_version,
+            overall_goal=practice_plan_details.overall_goal,
+            reading_list=practice_plan_details.reading_list,
+            next_session_suggestion_days=practice_plan_details.next_session_suggested_days,
+            motivation_note=practice_plan_details.motivation_note,
+            created_by=practice_plan_details.created_by,
+            approved_by=approved_by,
+            approved_at=approved_at,
+            decline_reason=decline_reason,
+            created_at=practice_plan_details.created_at,
+            updated_at=datetime.utcnow()
+        )
 
-    if response.validation.result != "VALID":
-        raise HTTPException(status_code=400, detail="Practice plan update failed validation.")
+        if response.validation.result != "VALID":
+            raise HTTPException(status_code=400, detail="Practice plan update failed validation.")
 
-    return ResponseSchema(
-        success=True,
-        status_code=200,
-        message=f"Practice plan successfully {status}.",
-        data={"practice_plan_id": practice_plan_details.ppid}
-    )
+        return ResponseSchema(
+            success=True,
+            status_code=200,
+            message=f"Practice plan successfully {practice_plan_details.status}.",
+            data={"practice_plan_id": practice_plan_details.ppid}
+        )
+
+    # Handle Practice Task review/edit
+    if practice_task_details:
+        response: SyncApplyActionResponse = palantir_client.ontology.actions.edit_practice_task(
+            action_config=ActionConfig(
+                mode=ActionMode.VALIDATE_AND_EXECUTE,
+                return_edits=ReturnEditsMode.ALL
+            ),
+            practice_task=practice_task_details.ptid,
+            ppid=practice_task_details.ppid,
+            uid=practice_task_details.uid,
+            competency=practice_task_details.competency,
+            description=practice_task_details.description,
+            actions=practice_task_details.actions,
+            due_date=practice_task_details.due_date.date() if isinstance(practice_task_details.due_date, datetime) else practice_task_details.due_date,
+            est_minutes=practice_task_details.est_minutes,
+            success_criteria=practice_task_details.success_criteria,
+            status=practice_task_details.status,
+            priority=practice_task_details.priority,
+            completed_at=practice_task_details.completed_at,
+            created_at=practice_task_details.created_at,
+            updated_at=datetime.utcnow()
+        )
+
+        if response.validation.result != "VALID":
+            raise HTTPException(status_code=400, detail="Practice task update failed validation.")
+
+        return ResponseSchema(
+            success=True,
+            status_code=200,
+            message="Practice task updated successfully.",
+            data={"practice_task_id": practice_task_details.ptid}
+        )
