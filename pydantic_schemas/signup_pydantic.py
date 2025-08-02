@@ -6,3 +6,4 @@ class SignUpSchema(BaseModel):
     email: str
     password: str
     name: str
+    role: Optional[str] = None
