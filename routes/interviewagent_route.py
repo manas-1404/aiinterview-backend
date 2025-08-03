@@ -172,53 +172,51 @@ async def send_message_streaming(
 
     palantir_client = request.app.state.foundry_client
 
-    url = f"{settings.PALANTIR_PROJECT_URL}/api/v2/aipAgents/agents/{settings.INTERVIEWER_AGENT_RID}/sessions/{cached_session_rid}/streamingContinue?preview=true"
+    streaming_url = f"{settings.PALANTIR_PROJECT_URL}/api/v2/aipAgents/agents/{settings.INTERVIEWER_AGENT_RID}/sessions/{cached_session_rid}/streamingContinue?preview=true"
+    url = f"{settings.PALANTIR_PROJECT_URL}/api/v2/aipAgents/agents/{settings.INTERVIEWER_AGENT_RID}/sessions/{cached_session_rid}/blockingContinue?preview=true"
+
     headers = {
         "Authorization": f"Bearer {settings.PALANTIR_API_KEY}",
         "Content-Type": "application/json"
     }
 
+    initial_prompt = "Directly start the interview, dont tell any starter sentences!!"
+
     payload = {
         "userInput": {
-            "text": message if message != "<start>" else "Directly start the interview, dont tell any starter sentences!!",
+            "text": message if message != "<start>" else initial_prompt,
         }
     }
 
     redis_pipe = redis_connection.pipeline()
     buffer = []
 
-    print("Current question counter:", question_counter)
+    text = "##END_INTERVIEW##"
 
-    async def event_stream():
-        # end the interview after 9 questions
-        if int(question_counter) >= 9:
-            yield "data: ##END_INTERVIEW##\n\n"
-            return
+    if message != "<start>":
+        await redis_pipe.rpush(f"interview_agent:{user_id}:answers", message)
 
-        print("Sending message to Palantir AIP Agent:", message)
+    if int(question_counter) >= 9:
+        await redis_pipe.execute()
+        await finalize_interview_logic(user_id, redis_connection, palantir_client)
+    else:
 
-        async with http_client.stream("POST", url, headers=headers, json=payload) as resp:
-            async for chunk in resp.aiter_text():
-                chunk = chunk.strip()
-                if chunk:
-                    buffer.append(chunk)
-                    yield f"data: {chunk}\n\n"
+        resp = await http_client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        text = resp.json().get("agentMarkdownResponse", "").strip()
 
-    async def finalize():
+        await redis_pipe.rpush(f"interview_agent:{user_id}:questions", text)
+        await redis_pipe.hset(f"interview_agent:{user_id}", "current_qna_pointer", str(int(question_counter) + 1))
+        await redis_pipe.execute()
 
-        if message != "<start>":
-            await redis_pipe.rpush(f"interview_agent:{user_id}:answers", message)
-
-        if int(question_counter) >= 9:
-            await finalize_interview_logic(user_id, redis_connection, palantir_client)
-        else:
-            await redis_pipe.rpush(f"interview_agent:{user_id}:questions", " ".join(buffer))
-            await redis_pipe.hset(f"interview_agent:{user_id}", "current_qna_pointer", str(int(question_counter) + 1))
-            await redis_pipe.execute()
-
-    stream_response = StreamingResponse(event_stream(), media_type="text/event-stream")
-    stream_response.background = finalize
-    return stream_response
+    return ResponseSchema(
+        success=True,
+        status_code=200,
+        message="Message sent successfully",
+        data={
+            "text": text
+        }
+    )
 
 
 async def finalize_interview_logic(user_id: int, redis_connection: Redis, palantir_client: FoundryClient):
