@@ -41,8 +41,8 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
     """
     Endpoint to get dashboard data.
     """
-    user_id = jwt_payload.get("sub")
-    role = jwt_payload.get("role")
+    user_id = jwt_payload.get("sub").get("uid")
+    role = jwt_payload.get("sub").get("role")
 
     palantir_client: FoundryClient = request.app.state.foundry_client
 
@@ -123,7 +123,7 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
                         practice_task_list.append(practice_plan.practice_task())
 
         combined_result_data = [CombinedResultSchema(
-            rid=int(each_combined_results.rid),
+            rid=int(each_combined_results.rid if isinstance(each_combined_results.rid, int) else 0),
             total_score_25=each_combined_results.total_score25,
             clarity_avg=each_combined_results.clarity_avg,
             created_at=each_combined_results.created_at,
@@ -146,7 +146,7 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
             for each_combined_results in combined_result
         ]
 
-        practice_plan_list_data = [
+        practice_plan_list_data: List[PracticePlanSchema] = [
             PracticePlanSchema(
                 ppid=plan.ppid,
                 overall_goal=plan.overall_goal,
@@ -167,12 +167,13 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
             for plan in practice_plan_list
         ]
 
-        practice_task_list_data = [
+        # TODO: chekc palantir ontology for PracticeTask completed_at because its returning '' for some reason
+        practice_task_list_data: List[PracticeTaskSchema] = [
             PracticeTaskSchema(
                 ptid=task.ptid,
                 competency=task.competency,
                 actions=task.actions,
-                completed_at=task.completed_at,
+                completed_at=task.completed_at if task.completed_at not in ("", None) else datetime.today(),
                 created_at=task.created_at,
                 description=task.description,
                 due_date=datetime.combine(task.due_date, time(23, 59)),
@@ -187,7 +188,7 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
             for task in practice_task_list
         ]
 
-        interview_session_data = [InterviewSessionSchema(
+        interview_session_data: List[InterviewSessionSchema] = [InterviewSessionSchema(
             iid=each_interview_session.iid,
             uid=each_interview_session.uid,
             jid=each_interview_session.jid,
@@ -218,7 +219,8 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
             data={"CombinedResult": combined_result_data,
                   "InterviewSession": interview_session_data,
                   "PracticePlans": practice_plan_list_data,
-                  "PracticeTasks": practice_task_list_data
+                  "PracticeTasks": practice_task_list_data,
+                  "role": role
                   }
         )
 
