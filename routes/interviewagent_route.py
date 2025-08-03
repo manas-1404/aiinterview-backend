@@ -45,6 +45,16 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
         await redis_connection.hset(redis_hash_key, "current_qna_pointer", str(0))
         await redis_connection.expire(redis_hash_key, 3600*2)
 
+        await redis_connection.hset(f"jobdescription:{user_id}", mapping={
+            "role": job_details.role,
+            "company": job_details.company,
+            "minimum_qualification": job_details.min_qualifications,
+            "preferred_qualification": job_details.preferred_qualifications,
+            "jd_summary": job_details.jd_summary,
+        })
+
+        await redis_connection.expire(f"jobdescription:{user_id}", 3600)
+
         return ResponseSchema(
             success=True,
             status_code=200,
@@ -129,7 +139,17 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
             }
         )
 
+        await redis_connection.hset(f"jobdescription:{user_id}", mapping={
+            "jid": str(new_jid),
+            "role": job_details.role,
+            "company": job_details.company,
+            "minimum_qualification": job_details.min_qualifications,
+            "preferred_qualification": job_details.preferred_qualifications,
+            "jd_summary": job_details.jd_summary,
+            })
+
         await redis_connection.expire(redis_hash_key, 3600*2)
+        await redis_connection.expire(f"jobdescription:{user_id}", 3600)
 
         return ResponseSchema(
             success=True,
@@ -180,7 +200,22 @@ async def send_message_streaming(
         "Content-Type": "application/json"
     }
 
-    initial_prompt = "Directly start the interview, dont tell any starter sentences!!"
+    initial_prompt = "Read the below job context and Directly start the behavioral interview, dont tell any of your starter sentences, only respond with the 1st question directly!!"
+
+    if message != "<start>":
+        job_info = await redis_connection.hgetall(f"jobdescription:{user_id}")
+
+        job_context = (
+            f"Role: {job_info.get('role', 'N/A')}\n"
+            f"Company: {job_info.get('company', 'N/A')}\n"
+            f"Minimum Qualifications: {job_info.get('minimum_qualification', 'N/A')}\n"
+            f"Preferred Qualifications: {job_info.get('preferred_qualification', 'N/A')}\n"
+            f"Job Description Summary: {job_info.get('jd_summary', 'N/A')}"
+        )
+
+        initial_prompt = f"Prompt: {initial_prompt}\n\nJob Context:{job_context}"
+
+        print(initial_prompt)
 
     payload = {
         "userInput": {
@@ -297,7 +332,8 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
         f"{redis_hash_key}:questions",
         f"{redis_hash_key}:answers",
         f"interview_agent:{user_id}:qaid",
-        f"interview_agent:{user_id}:iid"
+        f"interview_agent:{user_id}:iid",
+        f"jobdescription:{user_id}"
     )
 
     return response

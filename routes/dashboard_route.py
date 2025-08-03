@@ -210,7 +210,7 @@ async def get_dashboard_data(request: Request, jwt_payload: dict = Depends(authe
             }
         )
 
-        await redis_connection.expire(f"dashboard_cache:{user_id}", 3600)
+        await redis_connection.expire(f"dashboard_cache:{user_id}", 60*15)
 
         return ResponseSchema(
             success=True,
