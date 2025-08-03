@@ -5,6 +5,8 @@ import logging
 from ai_interviewer_sdk import FoundryClient, UserTokenAuth
 
 from pydantic_schemas.response_pydantic import ResponseSchema
+from routes.allqna_route import all_qna_router
+from routes.interviewrun_route import allinterview_router
 from utils.config import settings
 from routes.logic_route import login_router
 from routes.turn_route import turn_route
@@ -31,7 +33,8 @@ app.include_router(dashboard_router)
 app.include_router(upload_router)
 app.include_router(agent_router)
 app.include_router(practice_router)
-
+app.include_router(allinterview_router)
+app.include_router(all_qna_router)
 
 @app.on_event("startup")
 async def startup_event():
