@@ -8,7 +8,7 @@ from redis.asyncio import Redis
 from ai_interviewer_sdk.ontology.objects import User, InterviewSession
 from foundry_sdk_runtime.types import BatchActionConfig, ReturnEditsMode, ActionConfig, ActionMode, SyncApplyActionResponse
 from ai_interviewer_sdk.ontology.action_types import CreateTurnBatchRequest
-from datetime import datetime
+from datetime import datetime, timezone
 from ai_interviewer_sdk import FoundryClient, UserTokenAuth
 
 from db.redisConnection import get_redis_connection
@@ -95,8 +95,8 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
             jd_summary=job_details.jd_summary,
             competencies="",
             jd_text=job_details.jd_summary,
-            created_at=datetime.today(),
-            updated_at=datetime.today()
+            created_at=datetime.today().replace(microsecond=0),
+            updated_at=datetime.today().replace(microsecond=0)
         )
 
         new_interview_session: SyncApplyActionResponse = palantir_client.ontology.actions.create_interview_session(
@@ -106,13 +106,13 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
             iid=new_iid,
             uid=user_id,
             jid=new_jid,
-            started_at=datetime.today(),
+            started_at=datetime.today().replace(microsecond=0),
             status="started",
             rubric_version="v1",
             phase_log=json.dumps({"phase1": 3, "phase2": 3, "phase3": 3}),
-            created_at=datetime.today(),
-            updated_at=datetime.today(),
-            ended_at=datetime.today()
+            created_at=datetime.today().replace(microsecond=0),
+            updated_at=datetime.today().replace(microsecond=0),
+            ended_at=datetime.today().replace(microsecond=0)
         )
 
         if new_job_description.validation.result != "VALID":
@@ -196,7 +196,7 @@ async def send_message_streaming(
     if message != "<start>":
         await redis_pipe.rpush(f"interview_agent:{user_id}:answers", message)
 
-    if int(question_counter) >= 9:
+    if int(question_counter) >= 3:
         await redis_pipe.execute()
         await finalize_interview_logic(user_id, redis_connection, palantir_client)
     else:
@@ -244,8 +244,8 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
                 question=q, answer=a,
                 target_competency="phone-interview",
                 audio_url="", transcript_text=a,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
                 repair_attempts=0,
                 relevance=0,
                 star_a= 0,
@@ -278,16 +278,15 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
             mode=ActionMode.VALIDATE_AND_EXECUTE,
             return_edits=ReturnEditsMode.ALL),
         interview_session=cached_iid,
-        ended_at=datetime.today(),
+        uid=user_id,
+        jid=current_interview_data.jid,
+        started_at=current_interview_data.started_at,
+        ended_at=datetime.now(timezone.utc),
         status="completed",
         rubric_version="v1",
         phase_log=current_interview_data.phase_log,
-        jid=current_interview_data.jid,
-        uid=user_id,
-        completed_at=datetime.today(),
-        started_at=current_interview_data.started_at,
         created_at=current_interview_data.created_at,
-        updated_at=datetime.today()
+        updated_at=datetime.now(timezone.utc)
     )
 
     if edit_interview_session.validation.result != "VALID":

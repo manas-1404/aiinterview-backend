@@ -43,6 +43,9 @@ async def startup_event():
     app.state.foundry_client = FoundryClient(auth=auth, hostname=settings.PALANTIR_PROJECT_URL)
     app.state.client = httpx.AsyncClient()
 
+    next_id = app.state.foundry_client.ontology.queries.next_resume_cvidas_api()
+    print(f"Next CV ID: {next_id}")
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """
