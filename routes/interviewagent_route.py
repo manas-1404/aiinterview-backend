@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Request, HTTPException, Body
 from fastapi.responses import StreamingResponse
 import httpx
 from redis.asyncio import Redis
-from ai_interviewer_sdk.ontology.objects import User
+from ai_interviewer_sdk.ontology.objects import User, InterviewSession
 from foundry_sdk_runtime.types import BatchActionConfig, ReturnEditsMode, ActionConfig, ActionMode, SyncApplyActionResponse
 from ai_interviewer_sdk.ontology.action_types import CreateTurnBatchRequest
 from datetime import datetime
@@ -29,7 +29,7 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
     Endpoint to create a new interview agent session.
     """
 
-    user_id = jwt_payload.get("sub")
+    user_id = jwt_payload.get("sub").get("uid")
 
     palantir_client: FoundryClient = request.app.state.foundry_client
     user: User = palantir_client.ontology.objects.User.get(user_id)
@@ -93,6 +93,8 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
             minimum_qualification=job_details.min_qualifications,
             preferred_qualification=job_details.preferred_qualifications,
             jd_summary=job_details.jd_summary,
+            competencies="",
+            jd_text=job_details.jd_summary,
             created_at=datetime.today(),
             updated_at=datetime.today()
         )
@@ -109,7 +111,8 @@ async def create_agent_session(request: Request, job_details: JobDescriptionSche
             rubric_version="v1",
             phase_log=json.dumps({"phase1": 3, "phase2": 3, "phase3": 3}),
             created_at=datetime.today(),
-            updated_at=datetime.today()
+            updated_at=datetime.today(),
+            ended_at=datetime.today()
         )
 
         if new_job_description.validation.result != "VALID":
@@ -154,7 +157,7 @@ async def send_message_streaming(
     Endpoint to send message to Palantir AIP Agent in streaming mode.
     """
 
-    user_id = jwt_payload.get("sub")
+    user_id = jwt_payload.get("sub").get("uid")
 
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID not found in JWT payload.")
@@ -164,6 +167,7 @@ async def send_message_streaming(
     fields = ["agent_session_id", "current_qna_pointer"]
     cached_session_rid, question_counter = await redis_connection.hmget(redis_hash_key, fields)
     if not cached_session_rid:
+        print("Cached session RID not found in Redis for user:", user_id)
         raise HTTPException(status_code=404, detail="No active session found. Please create a session first.")
 
     palantir_client = request.app.state.foundry_client
@@ -176,32 +180,36 @@ async def send_message_streaming(
 
     payload = {
         "userInput": {
-            "text": message if message != "<start>" else "Start the interview and ask the 1st question"
+            "text": message if message != "<start>" else "Directly start the interview, dont tell any starter sentences!!",
         }
     }
 
     redis_pipe = redis_connection.pipeline()
     buffer = []
 
-    async def event_stream():
+    print("Current question counter:", question_counter)
 
-        # if the questions cross 9, then its the end of the interview
-        if question_counter >= 9:
-            yield "##END_INTERVIEW##"
-        else:
-            async with http_client.stream("POST", url, headers=headers, json=payload) as response:
-                async for chunk in response.aiter_text():
-                    chunk = chunk.strip()
-                    if chunk:
-                        buffer.append(chunk)
-                        yield chunk
+    async def event_stream():
+        # end the interview after 9 questions
+        if int(question_counter) >= 9:
+            yield "data: ##END_INTERVIEW##\n\n"
+            return
+
+        print("Sending message to Palantir AIP Agent:", message)
+
+        async with http_client.stream("POST", url, headers=headers, json=payload) as resp:
+            async for chunk in resp.aiter_text():
+                chunk = chunk.strip()
+                if chunk:
+                    buffer.append(chunk)
+                    yield f"data: {chunk}\n\n"
 
     async def finalize():
 
         if message != "<start>":
             await redis_pipe.rpush(f"interview_agent:{user_id}:answers", message)
 
-        if question_counter >= 9:
+        if int(question_counter) >= 9:
             await finalize_interview_logic(user_id, redis_connection, palantir_client)
         else:
             await redis_pipe.rpush(f"interview_agent:{user_id}:questions", " ".join(buffer))
@@ -236,10 +244,24 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
                 qaid=new_qaid, iid=cached_iid, uid=user_id,
                 turn_index=idx,
                 question=q, answer=a,
-                target_competency="default",
+                target_competency="phone-interview",
                 audio_url="", transcript_text=a,
                 created_at=datetime.now(),
-                updated_at=datetime.now()
+                updated_at=datetime.now(),
+                repair_attempts=0,
+                relevance=0,
+                star_a= 0,
+                clarity=0,
+                filler=0.0,
+                issues="",
+                technical_depth=0,
+                blocked=False,
+                composite_star=0.0,
+                star_r=0,
+                star_s=0,
+                justification="",
+                star_t=0,
+                safety_flags=""
             )
         )
 
@@ -251,6 +273,8 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
         requests=batch_requests
     )
 
+    current_interview_data: InterviewSession = palantir_client.ontology.objects.InterviewSession.get(cached_iid)
+
     edit_interview_session: SyncApplyActionResponse = palantir_client.ontology.actions.edit_interview_session(
         action_config=ActionConfig(
             mode=ActionMode.VALIDATE_AND_EXECUTE,
@@ -258,6 +282,13 @@ async def finalize_interview_logic(user_id: int, redis_connection: Redis, palant
         interview_session=cached_iid,
         ended_at=datetime.today(),
         status="completed",
+        rubric_version="v1",
+        phase_log=current_interview_data.phase_log,
+        jid=current_interview_data.jid,
+        uid=user_id,
+        completed_at=datetime.today(),
+        started_at=current_interview_data.started_at,
+        created_at=current_interview_data.created_at,
         updated_at=datetime.today()
     )
 
