@@ -232,7 +232,8 @@ async def send_message_streaming(
     if message != "<start>":
         await redis_pipe.rpush(f"interview_agent:{user_id}:answers", message)
 
-    if int(question_counter) >= 3:
+    #limiting the number of questions to 9, but can be increased based on requirements
+    if int(question_counter) >= 9:
         await redis_pipe.execute()
         await finalize_interview_logic(user_id, redis_connection, palantir_client)
     else:
