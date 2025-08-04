@@ -200,9 +200,10 @@ async def send_message_streaming(
         "Content-Type": "application/json"
     }
 
-    initial_prompt = "Read the below job context and Directly start the behavioral interview, dont tell any of your starter sentences, only respond with the 1st question directly!!"
+    initial_prompt = "You are an AI interviewer conducting a professional behavioral interview for the role described in the provided job description. Use details from the job description to infer the company name, position title, and key responsibilities. Begin by thanking the candidate for joining and acknowledging their application for this specific position at the inferred company, then immediately proceed with the first behavioral interview question without any additional commentary or meta statements. Keep your tone warm yet professional, ensure questions are concise and relevant to the role, and use the STAR (Situation, Task, Action, Result) framework to encourage detailed responses. Do not mention you are an AI or describe your process; after the initial thank‑you, directly ask the first question to begin the interview."
+    # initial_prompt = "Read the below job context and Directly start the behavioral interview, dont tell any of your starter sentences, only respond with the 1st question directly!!"
 
-    if message != "<start>":
+    if message == "<start>":
         job_info = await redis_connection.hgetall(f"jobdescription:{user_id}")
 
         job_context = (
