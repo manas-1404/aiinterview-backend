@@ -204,4 +204,4 @@ _(See individual route modules for additional endpoints and details.)_
 
 ## License
 
-This project is for non commercial use only! See `LICENSE` for details.
+This project is for personal use only! See `LICENSE` for details.
