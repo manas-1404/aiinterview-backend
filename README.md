@@ -58,7 +58,7 @@ The backend provides RESTful APIs to manage users, interview sessions, resume da
 
 This page shows the dashboard of the Ai-Interviewer application. The dashboard metrics and information are computed using Palantir AIP Logic and automations.
 
-![assets/dashboard.png](dashboard)
+![Dashboard](./assets/dashboard.png)
 
 ---
 
@@ -66,7 +66,7 @@ This page shows the dashboard of the Ai-Interviewer application. The dashboard m
 
 This page shows the practice plan and the practice tasks after the interview. All the information and tasks are generated with the help of Palantir AIP Agents, AIP Logic and automations.
 
-![assets/practice_plan_task.png](practiceplan)
+![Practice Plan and Tasks](./assets/practice_plan_task.png)
 
 ---
 
