@@ -43,7 +43,7 @@ coverage.xml
 .pyre/
 .pytype/
 
-# Static and temp files
+# Static and assets files
 build/
 dist/
 *.egg-info/
